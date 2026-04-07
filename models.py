@@ -69,6 +69,16 @@ class ProductState(BaseModel):
     pending_restock_arrives_at_step: Optional[int] = Field(
         default=None, description="Step number when the pending restock order will arrive"
     )
+    # Compounding popularity effect
+    popularity_multiplier: float = Field(
+        default=1.0,
+        description=(
+            "Cumulative pick-probability multiplier earned through repeated discounting. "
+            "Starts at 1.0 and compounds up each time a discount action is applied: "
+            "popularity_multiplier *= (1 + discount_pct / 100). "
+            "Persists across steps within an episode; resets to 1.0 on reset()."
+        ),
+    )
 
 
 class StoremanagerAction(Action):

@@ -2,6 +2,65 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+---
+
+## Hackathon Submission Requirements
+
+This project is being submitted to a hackathon. Every change must keep the following requirements satisfied — never regress them.
+
+### Mandatory env variables (inference.py must use exactly these names)
+
+| Variable | Purpose |
+|---|---|
+| `HF_TOKEN` | API key passed to OpenAI client (`api_key=`) |
+| `API_BASE_URL` | LLM base URL passed to OpenAI client (`base_url=`) |
+| `MODEL_NAME` | Model identifier used for all LLM calls |
+
+`STORE_ENV_URL` is a separate optional variable for the environment server URL (default: `http://localhost:8000`). Do not confuse it with `API_BASE_URL`.
+
+### Structured log format (exact field names required — do not rename)
+
+```
+[START] {"task": "...", "seed": N, "model": "...", "max_steps": N, "profit_target": N}
+[STEP]  {"task": "...", "step": N, "action": {...}, "reward": ..., "cumulative_profit": ...}
+[END]   {"task": "...", "cumulative_profit": ..., "score": ..., "profit_target": ...}
+```
+
+Extra fields in `[STEP]` (e.g. `holding_cost`, `placement_cost`, `restock_cost`) are allowed but the above fields must always be present with exact names.
+
+### Pre-submission checklist
+
+- [ ] `HF_TOKEN`, `API_BASE_URL`, `MODEL_NAME` read by inference.py ✅
+- [ ] `inference.py` in root directory ✅
+- [ ] `[START]`/`[STEP]`/`[END]` logs emitted to stdout ✅
+- [ ] 3 tasks (easy/medium/hard) with deterministic graders scoring 0.0–1.0 ✅
+- [ ] `openenv.yaml` present and valid ✅
+- [ ] `server/Dockerfile` builds cleanly ✅
+- [ ] `reset()`, `step()`, `state()` endpoints exposed via `create_app()` ✅
+- [ ] Typed Pydantic models for Action, Observation, State ✅
+- [ ] Meaningful reward function (non-sparse, multiple components) ✅
+- [ ] README has: env description, action/obs space, task descriptions, setup instructions, baseline scores ✅
+- [ ] Inference runtime < 20 min (3 tasks × ≤30 steps × fast model) ✅
+- [ ] Runs on vcpu=2, memory=8gb (pure Python, no GPU dependencies) ✅
+
+### Observation extraction in inference.py (do not regress)
+
+The WebSocket server sends: `{"type": "observation", "data": {"observation": {...}, "done": bool, "reward": float}}`.
+
+The `_unpack(msg)` helper in `inference.py` correctly extracts the inner observation and injects `done`/`reward` at the top level. **Never replace this with `msg.get("data", msg)` directly** — that returns the outer wrapper and `obs.get("inventory", [])` would always be `[]`, scoring every task 0.0.
+
+### Scoring weights (for prioritizing what to improve)
+
+| Criterion | Weight |
+|---|---|
+| Real-world utility | 30% |
+| Task & grader quality | 25% |
+| Environment design | 20% |
+| Code quality & spec compliance | 15% |
+| Creativity & novelty | 10% |
+
+---
+
 ## Project Goal
 
 This is an **OpenEnv** reinforcement learning environment simulating a retail store manager. The RL task (see [docs/PROBLEM.md](docs/PROBLEM.md)) involves an LLM agent that manages store inventory to maximize profit. The agent can apply discounts, restock inventory, and move products between shelf zones. The environment is fully implemented in [server/StoreManager_environment.py](server/StoreManager_environment.py).

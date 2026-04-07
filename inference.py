@@ -1,16 +1,20 @@
 """
 Inference script for the Store Manager environment.
 
-Runs an LLM agent (via OpenAI API) through all three difficulty tasks
-(easy → medium → hard) and reports a deterministic grade (0.0–1.0) per task.
+Runs an LLM agent through all three difficulty tasks (easy → medium → hard)
+and reports a deterministic grade (0.0–1.0) per task.
 
 Usage:
     python inference.py
-    python inference.py --url http://localhost:8000 --model gpt-4o-mini
+    python inference.py --url http://localhost:8000
 
-Requirements:
-    OPENAI_API_KEY environment variable must be set.
-    The Store Manager server must be running at --url (default: http://localhost:8000).
+Required environment variables:
+    HF_TOKEN       API key for the LLM provider (Hugging Face token or OpenAI key)
+    API_BASE_URL   Base URL of the LLM API  (e.g. https://api-inference.huggingface.co/v1/)
+    MODEL_NAME     Model identifier          (e.g. meta-llama/Llama-3.1-8B-Instruct)
+
+Optional environment variables:
+    STORE_ENV_URL  Base URL of the running Store Manager server (default: http://localhost:8000)
 
 Structured log format emitted to stdout:
     [START] {"task": "...", "seed": N, "model": "...", "max_steps": N, "profit_target": N}
@@ -62,15 +66,15 @@ Discounts boost customer pick probability and clear near-expiry stock.
   {"action_type": "discount", "product_id": <int>, "discount_pct": <0|10|20|50>}
 
 Discount tiers and effect:
-  0%  → no change   | 10% → +10% relative boost | 20% → +20% boost | 50% → +50% boost
+  0%  -> no change   | 10% -> +10% relative boost | 20% -> +20% boost | 50% -> +50% boost
 
-When to discount: near-expiry items (avoid expiry penalty = remaining_qty × cost),
+When to discount: near-expiry items (avoid expiry penalty = remaining_qty x cost),
 high-margin products to drive volume, or oversupplied items.
 
 ── 2. RESTOCK ───────────────────────────────────────────────────────────────────
 Place a reorder for a product. Stock arrives after restock_lead_time steps.
 Costs restock_cost_per_unit per unit (upfront, this step). One order per product
-at a time — wait for delivery before reordering the same product.
+at a time -- wait for delivery before reordering the same product.
   {"action_type": "restock", "product_id": <int>, "restock_quantity": <int>}
 
 When to restock: low stock on a high-demand product, enough steps left before expiry
@@ -81,31 +85,35 @@ Move a product to a different shelf zone. Costs a flat placement fee ($3.00).
   {"action_type": "place", "product_id": <int>, "target_zone": <1|2|3>}
 
 Zone multipliers on pick probability:
-  Zone 1 (premium/entrance) → ×1.5   [capacity: 2 products max]
-  Zone 2 (standard)         → ×1.0   [capacity: 4 products max]
-  Zone 3 (back/low-traffic) → ×0.6   [unlimited]
+  Zone 1 (premium/entrance) -> x1.5   [capacity: 2 products max]
+  Zone 2 (standard)         -> x1.0   [capacity: 4 products max]
+  Zone 3 (back/low-traffic) -> x0.6   [unlimited]
 
 When to place: move high-value or near-expiry products to zone 1 to increase
 their pick probability. Move slow-movers to zone 3.
 
 ── COSTS CHARGED EVERY STEP ─────────────────────────────────────────────────────
-- Holding cost: each unit in stock costs holding_cost_rate × cost_price per step.
+- Holding cost: each unit in stock costs holding_cost_rate x cost_price per step.
   Minimize idle inventory by balancing restocks with sales velocity.
-- Expiry penalty: remaining_qty × cost_price for each expired product.
+- Expiry penalty: remaining_qty x cost_price for each expired product.
 
 Goal: maximize cumulative profit = revenue - COGS - expiry_penalty - holding_cost
       - placement_cost - restock_cost.
 
 Respond ONLY with a single JSON object (one of the three formats above).
-No explanation, no extra text — just the JSON.
+No explanation, no extra text -- just the JSON.
 """
 
 
 def _format_inventory(obs: dict) -> str:
     """Format inventory state as a readable table for the LLM prompt."""
-    zm = obs.get("zone_multipliers", {1: 1.5, 2: 1.0, 3: 0.6})
-    zc = obs.get("zone_capacity", {1: 2, 2: 4, 3: 99})
-    zo = obs.get("zone_occupancy", {1: 0, 2: 0, 3: 0})
+    # JSON serializes int dict keys as strings; coerce back to int for lookup
+    zm_raw = obs.get("zone_multipliers", {})
+    zc_raw = obs.get("zone_capacity", {})
+    zo_raw = obs.get("zone_occupancy", {})
+    zm = {int(k): v for k, v in zm_raw.items()} if zm_raw else {1: 1.5, 2: 1.0, 3: 0.6}
+    zc = {int(k): v for k, v in zc_raw.items()} if zc_raw else {1: 2, 2: 4, 3: 99}
+    zo = {int(k): v for k, v in zo_raw.items()} if zo_raw else {1: 0, 2: 0, 3: 0}
 
     lines = [
         f"Step {obs['current_step'] + 1}/{obs['max_steps']} "
@@ -116,7 +124,7 @@ def _format_inventory(obs: dict) -> str:
         "",
         "Zone info: "
         + "  ".join(
-            f"Zone {z}: ×{zm.get(z, 1.0)} ({zo.get(z, 0)}/{zc.get(z, '?')} slots)"
+            f"Zone {z}: x{zm.get(z, 1.0)} ({zo.get(z, 0)}/{zc.get(z, '?')} slots)"
             for z in [1, 2, 3]
         ),
         "",
@@ -207,8 +215,21 @@ def _ws_url(http_url: str) -> str:
 
 def _recv_json(ws: websocket.WebSocket) -> dict:
     """Receive one WebSocket message and parse as JSON."""
-    raw = ws.recv()
-    return json.loads(raw)
+    return json.loads(ws.recv())
+
+
+def _unpack(msg: dict) -> dict:
+    """
+    Unpack a WebSocket message into a flat observation dict.
+
+    The server sends: {"type": "observation", "data": {"observation": {...}, "done": bool, "reward": float}}
+    This extracts the inner observation and injects done/reward at the top level.
+    """
+    data = msg.get("data", msg)
+    obs = data.get("observation", data)
+    obs["done"] = data.get("done", obs.get("done", False))
+    obs["reward"] = data.get("reward", obs.get("reward", 0.0))
+    return obs
 
 
 # ── Episode runner ─────────────────────────────────────────────────────────────
@@ -230,9 +251,8 @@ def run_episode(
     ws = websocket.create_connection(ws_url, timeout=60)
     try:
         # ── Reset ──────────────────────────────────────────────────────────────
-        ws.send(json.dumps({"type": "reset", "data": {"seed": task.seed}}))
-        msg = _recv_json(ws)
-        obs = msg.get("data", msg)
+        ws.send(json.dumps({"type": "reset", "data": {"task": task_name, "seed": task.seed}}))
+        obs = _unpack(_recv_json(ws))
 
         print(
             f"[START] {json.dumps({'task': task_name, 'seed': task.seed, 'model': model, 'max_steps': task.max_steps, 'profit_target': task.profit_target})}",
@@ -268,8 +288,7 @@ def run_episode(
 
             # Send action to environment
             ws.send(json.dumps({"type": "step", "data": action}))
-            msg = _recv_json(ws)
-            obs = msg.get("data", msg)
+            obs = _unpack(_recv_json(ws))
 
             step_num += 1
             print(
@@ -301,27 +320,35 @@ def main() -> None:
     parser.add_argument(
         "--url",
         default=os.getenv("STORE_ENV_URL", "http://localhost:8000"),
-        help="Base URL of the running Store Manager server",
-    )
-    parser.add_argument(
-        "--model",
-        default=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        help="OpenAI model to use for the agent",
+        help="Base URL of the running Store Manager server (env: STORE_ENV_URL)",
     )
     args = parser.parse_args()
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("ERROR: OPENAI_API_KEY environment variable not set.", file=sys.stderr)
+    # ── Mandatory env vars (per hackathon spec) ────────────────────────────────
+    hf_token = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
+    if not hf_token:
+        print(
+            "ERROR: HF_TOKEN environment variable not set. "
+            "Set it to your Hugging Face token or OpenAI API key.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    client = OpenAI(api_key=api_key)
+    api_base_url = os.getenv("API_BASE_URL")
+    model = os.getenv("MODEL_NAME") or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    # Build OpenAI-compatible client
+    client_kwargs: dict = {"api_key": hf_token}
+    if api_base_url:
+        client_kwargs["base_url"] = api_base_url
+
+    client = OpenAI(**client_kwargs)
     ws_url = _ws_url(args.url)
 
     results = {}
-    for task_name in ["easy", "medium", "hard"]:
+    for task_name in ["easy", "medium", "hard", "expert"]:
         try:
-            profit, score = run_episode(ws_url, task_name, client, args.model)
+            profit, score = run_episode(ws_url, task_name, client, model)
             results[task_name] = {"profit": round(profit, 4), "score": round(score, 4)}
         except Exception as exc:
             print(f"[ERROR] task={task_name} error={exc}", file=sys.stderr, flush=True)

@@ -42,6 +42,7 @@ _ROOT = os.path.join(os.path.dirname(__file__), "..")
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+import math
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -105,10 +106,13 @@ class StoremanagerEnvironment(Environment):
             self._expiry_offset_min = task_config.expiry_offset_min
             self._expiry_offset_max = task_config.expiry_offset_max
             self._task_name = task_config.name
+            self._profit_target = task_config.profit_target
         else:
             self._expiry_offset_min = 8
             self._expiry_offset_max = 25
             self._task_name = "custom"
+            # Default: assume ~$8 average profit per step for custom configs
+            self._profit_target = 8.0 * max_steps
 
         self._num_products = min(num_products, len(_PRODUCT_NAMES))
         self._max_steps = max_steps
@@ -134,7 +138,29 @@ class StoremanagerEnvironment(Environment):
         episode_id: Optional[str] = None,
         **kwargs: Any,
     ) -> StoremanagerObservation:
-        """Reset the store and generate a fresh inventory."""
+        """Reset the store and generate a fresh inventory.
+
+        Accepts an optional ``task`` keyword argument to dynamically switch the
+        task configuration without restarting the server.  This allows a single
+        server instance to serve all difficulty levels sequentially.
+        """
+        # ── Dynamic task reconfiguration ────────────────────────────────────
+        task_name = kwargs.get("task")
+        if task_name:
+            try:
+                from tasks import TASKS  # local import to avoid circular deps
+                task_config = TASKS.get(task_name)
+                if task_config is not None:
+                    self._num_products = min(task_config.num_products, len(_PRODUCT_NAMES))
+                    self._max_steps = task_config.max_steps
+                    self._num_customers = task_config.num_customers
+                    self._expiry_offset_min = task_config.expiry_offset_min
+                    self._expiry_offset_max = task_config.expiry_offset_max
+                    self._task_name = task_config.name
+                    self._profit_target = task_config.profit_target
+            except ImportError:
+                pass  # tasks module unavailable; keep current config
+
         self._reset_rubric()
 
         effective_seed = seed if seed is not None else self._base_seed
@@ -202,10 +228,11 @@ class StoremanagerEnvironment(Environment):
             if p.is_active and p.quantity > 0
         )
 
-        # ── 4. Reset all discounts (ephemeral — one step only) ──────────────
+        # ── 4. Reset per-step discount tracker (selling_price persists across steps) ──
+        # current_discount_pct tracks only this step's discount for the pick-prob formula.
+        # selling_price is NOT reset — discounts compound: each action cuts the current price.
         for product in self._inventory:
             product.current_discount_pct = 0.0
-            product.selling_price = product.base_selling_price
 
         # ── 5. Dispatch action ──────────────────────────────────────────────
         placement_cost = 0.0
@@ -213,10 +240,25 @@ class StoremanagerEnvironment(Environment):
         target = next(p for p in self._inventory if p.product_id == action.product_id)
 
         if action.action_type == "discount":
-            if target.is_active and target.quantity > 0:
-                target.current_discount_pct = float(action.discount_pct)
-                target.selling_price = round(
-                    target.base_selling_price * (1.0 - action.discount_pct / 100.0), 2
+            if not target.is_active:
+                return self._error_observation(
+                    f"Product '{target.name}' (id={target.product_id}) is no longer active "
+                    f"(sold out or expired). Choose an active product to discount."
+                )
+            if target.quantity <= 0:
+                return self._error_observation(
+                    f"Product '{target.name}' (id={target.product_id}) has no stock remaining."
+                )
+            target.current_discount_pct = float(action.discount_pct)
+            # selling_price compounds down: each discount cuts the current price
+            target.selling_price = round(
+                target.selling_price * (1.0 - action.discount_pct / 100.0), 2
+            )
+            # popularity_multiplier compounds up: repeated discounting makes the
+            # product progressively more visible/attractive to customers
+            if action.discount_pct > 0:
+                target.popularity_multiplier = round(
+                    target.popularity_multiplier * (1.0 + action.discount_pct / 100.0), 6
                 )
 
         elif action.action_type == "restock":
@@ -285,12 +327,15 @@ class StoremanagerEnvironment(Environment):
                 placement_cost_this_step=placement_cost,
                 restock_cost_this_step=round(restock_cost, 4),
                 done=done,
-                reward=0.0,
+                reward=self._normalize_reward(0.0),
             )
 
-        # ── 7. Compute pick probabilities (zone + discount) ─────────────────
+        # ── 7. Compute pick probabilities (zone + discount + popularity) ────
         effective_weights = np.array([
-            p.base_probability * ZONE_MULTIPLIERS[p.zone] * (1.0 + p.current_discount_pct / 100.0)
+            p.base_probability
+            * ZONE_MULTIPLIERS[p.zone]
+            * (1.0 + p.current_discount_pct / 100.0)
+            * p.popularity_multiplier
             for p in active
         ])
         pick_probs = effective_weights / effective_weights.sum()
@@ -358,7 +403,8 @@ class StoremanagerEnvironment(Environment):
         )
 
         # ── 14. State update and return ─────────────────────────────────────
-        self._update_state(last_reward=step_profit)
+        normalized_reward = self._normalize_reward(step_profit)
+        self._update_state(last_reward=normalized_reward)
 
         return StoremanagerObservation(
             inventory=list(self._inventory),
@@ -378,7 +424,7 @@ class StoremanagerEnvironment(Environment):
             placement_cost_this_step=placement_cost,
             restock_cost_this_step=round(restock_cost, 4),
             done=done,
-            reward=step_profit,
+            reward=normalized_reward,
             metadata={
                 "step_revenue": round(step_revenue, 4),
                 "step_cost": round(step_cost, 4),
@@ -386,6 +432,7 @@ class StoremanagerEnvironment(Environment):
                 "holding_cost": round(holding_cost, 4),
                 "placement_cost": placement_cost,
                 "restock_cost": round(restock_cost, 4),
+                "step_profit": round(step_profit, 4),
             },
         )
 
@@ -394,6 +441,30 @@ class StoremanagerEnvironment(Environment):
         return self._state
 
     # ── Private helpers ───────────────────────────────────────────────────────
+
+    def _normalize_reward(self, step_profit: float) -> float:
+        """
+        Map raw step profit to a meaningful reward in (0.0, 1.0) using a
+        sigmoid centered at break-even (step_profit = 0).
+
+        Formula:
+            x = step_profit / per_step_target   (normalise by average needed per step)
+            reward = sigmoid(k * x) = 1 / (1 + exp(-k * x))
+
+        Where k=2 gives a useful spread:
+            step_profit =  0            -> 0.50  (neutral, broke even)
+            step_profit =  per_step_tgt -> 0.88  (on-track for target)
+            step_profit = 2*per_step_tgt -> 0.98 (excellent step)
+            step_profit = -per_step_tgt -> 0.12  (below break-even)
+            step_profit = -2*per_step_tgt -> 0.02 (large penalty step)
+
+        This gives the model a continuous, differentiable gradient signal
+        across the full [0, 1] range — much more informative than a hard clamp.
+        Raw dollar profit is preserved in last_step_profit and metadata.
+        """
+        per_step_target = self._profit_target / self._max_steps
+        x = step_profit / per_step_target if per_step_target != 0 else 0.0
+        return round(1.0 / (1.0 + math.exp(-2.0 * x)), 6)
 
     def _zone_occupancy(self) -> Dict[int, int]:
         """Count active products in each zone."""
@@ -404,12 +475,15 @@ class StoremanagerEnvironment(Environment):
         return occupancy
 
     def _recompute_pick_probs(self) -> None:
-        """Recompute normalised pick probabilities for all active products (zone-aware)."""
+        """Recompute normalised pick probabilities for all active products (zone + popularity)."""
         active = [p for p in self._inventory if p.is_active and p.quantity > 0]
         if not active:
             return
         effs = np.array([
-            p.base_probability * ZONE_MULTIPLIERS[p.zone] * (1.0 + p.current_discount_pct / 100.0)
+            p.base_probability
+            * ZONE_MULTIPLIERS[p.zone]
+            * (1.0 + p.current_discount_pct / 100.0)
+            * p.popularity_multiplier
             for p in active
         ])
         probs = effs / effs.sum()
@@ -467,6 +541,7 @@ class StoremanagerEnvironment(Environment):
                     restock_lead_time=lead_time,
                     pending_restock_quantity=0,
                     pending_restock_arrives_at_step=None,
+                    popularity_multiplier=1.0,
                 )
             )
         return inventory
