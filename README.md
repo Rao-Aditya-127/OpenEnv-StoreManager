@@ -1,6 +1,6 @@
 ---
-title: Storemanager Environment Server
-emoji: 🎯
+title: Store Manager Environment
+emoji: 🛒
 colorFrom: blue
 colorTo: yellow
 sdk: docker
@@ -11,245 +11,175 @@ tags:
   - openenv
 ---
 
-# Storemanager Environment
+# Store Manager Environment
 
-A simple test environment that echoes back messages. Perfect for testing the env APIs as well as demonstrating environment usage patterns.
+A retail store simulator where an LLM agent acts as the store manager. Each step the agent applies a discount to one product to influence customer demand and maximize cumulative profit over a fixed episode horizon.
+
+## Task Overview
+
+| Component | Description |
+|---|---|
+| **Products** | N products, each with cost price, selling price, quantity, expiry step, and a base pick probability |
+| **Customers** | Fixed number of customers per step pick products according to a normalized probability distribution |
+| **Agent Action** | Choose one product and a discount tier: 0%, 10%, 20%, or 50% |
+| **Reward** | `step_revenue − step_cost − expiry_penalty` per step |
+| **Expiry penalty** | `remaining_quantity × cost_price` for each product that expires |
+| **Episode end** | After `max_steps` steps, or when all products are inactive |
+
+### Discount → Probability Formula
+
+Discounting a product multiplicatively boosts its pick probability:
+
+```
+effective_weight[i] = base_probability[i] × (1 + discount_pct[i] / 100)
+pick_prob[i]        = effective_weight[i] / sum(effective_weight for all active products)
+```
+
+## Difficulty Tasks
+
+Three pre-configured tasks with increasing difficulty:
+
+| Task | Products | Steps | Customers/step | Expiry range | Grade target |
+|------|----------|-------|---------------|-------------|-------------|
+| **easy** | 4 | 20 | 15 | 18–30 steps | $120 profit |
+| **medium** | 8 | 30 | 10 | 8–20 steps | $280 profit |
+| **hard** | 12 | 20 | 8 | 4–10 steps | $200 profit |
+
+### Grading
+
+Each task is graded deterministically (fixed seed per task):
+
+```
+score = clamp(cumulative_profit / profit_target, 0.0, 1.0)
+```
+
+A score of 1.0 means the agent reached or exceeded the profit target. Partial credit is awarded proportionally.
 
 ## Quick Start
 
-The simplest way to use the Storemanager environment is through the `StoremanagerEnv` class:
-
 ```python
 from StoreManager import StoremanagerAction, StoremanagerEnv
 
-try:
-    # Create environment from Docker image
-    StoreManagerenv = StoremanagerEnv.from_docker_image("StoreManager-env:latest")
+with StoremanagerEnv(base_url="http://localhost:8000") as env:
+    result = env.reset()
+    print([p.name for p in result.observation.inventory])
 
-    # Reset
-    result = StoreManagerenv.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-
-    # Send multiple messages
-    messages = ["Hello, World!", "Testing echo", "Final message"]
-
-    for msg in messages:
-        result = StoreManagerenv.step(StoremanagerAction(message=msg))
-        print(f"Sent: '{msg}'")
-        print(f"  → Echoed: '{result.observation.echoed_message}'")
-        print(f"  → Length: {result.observation.message_length}")
-        print(f"  → Reward: {result.reward}")
-
-finally:
-    # Always clean up
-    StoreManagerenv.close()
+    # Apply 20% discount to product 0
+    result = env.step(StoremanagerAction(product_id=0, discount_pct=20))
+    print(f"Reward: {result.reward:.2f}")
+    print(f"Step profit: {result.observation.last_step_profit:.2f}")
+    print(f"Cumulative: {result.observation.cumulative_profit:.2f}")
 ```
 
-That's it! The `StoremanagerEnv.from_docker_image()` method handles:
-- Starting the Docker container
-- Waiting for the server to be ready
-- Connecting to the environment
-- Container cleanup when you call `close()`
-
-## Building the Docker Image
-
-Before using the environment, you need to build the Docker image:
+## Running Locally
 
 ```bash
-# From project root
-docker build -t StoreManager-env:latest -f server/Dockerfile .
+# Install dependencies
+uv sync
+
+# Run server (default task: custom config)
+uvicorn server.app:app --reload
+
+# Run with a specific difficulty task
+STORE_TASK=hard uvicorn server.app:app --reload
+
+# Test environment logic directly (no server needed)
+python server/StoreManager_environment.py
 ```
+
+## Running the Inference Script
+
+The `inference.py` script runs an LLM agent through all three tasks and reports scores.
+
+```bash
+# Server must be running first
+uvicorn server.app:app &
+
+# Run inference
+OPENAI_API_KEY=sk-... python inference.py
+
+# Custom server URL or model
+OPENAI_API_KEY=sk-... python inference.py --url http://localhost:8000 --model gpt-4o-mini
+```
+
+Output format:
+```
+[START] {"task": "easy", "seed": 42, "model": "gpt-4o-mini", "max_steps": 20, "profit_target": 120.0}
+[STEP]  {"task": "easy", "step": 1, "action": {"product_id": 2, "discount_pct": 20}, "reward": 12.5, "cumulative_profit": 12.5}
+...
+[END]   {"task": "easy", "cumulative_profit": 145.3, "score": 1.0, "profit_target": 120.0}
+```
+
+## Action & Observation
+
+### Action: `StoremanagerAction`
+| Field | Type | Description |
+|---|---|---|
+| `product_id` | int | ID of the product to discount |
+| `discount_pct` | 0 \| 10 \| 20 \| 50 | Discount tier to apply |
+
+### Observation: `StoremanagerObservation`
+| Field | Type | Description |
+|---|---|---|
+| `inventory` | List[ProductState] | Full state of all products |
+| `current_step` | int | Current step (0-indexed) |
+| `steps_remaining` | int | Steps left in the episode |
+| `cumulative_profit` | float | Total profit so far |
+| `last_step_profit` | float | Net profit from last step |
+| `last_expired_products` | List[str] | Products that expired this step |
+| `task_name` | str | Active task: easy / medium / hard / custom |
+
+### ProductState fields (inside inventory)
+| Field | Description |
+|---|---|
+| `product_id` | Unique integer ID |
+| `name` | Product name (e.g. "Milk") |
+| `cost_price` / `selling_price` | Per-unit prices |
+| `quantity` | Units in stock |
+| `expiry_step` | Step number at which product expires |
+| `effective_pick_prob` | Normalized pick probability this step (sums to 1.0) |
+| `current_discount_pct` | Active discount this step (resets each step) |
+
+## Configuration
+
+Control the server via environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `STORE_TASK` | _(none)_ | Set to `easy`, `medium`, or `hard` to use a preset task |
+| `STORE_NUM_PRODUCTS` | 8 | Number of products (overridden by STORE_TASK) |
+| `STORE_MAX_STEPS` | 30 | Episode length (overridden by STORE_TASK) |
+| `STORE_NUM_CUSTOMERS` | 10 | Customers per step (overridden by STORE_TASK) |
+| `STORE_MAX_CONCURRENT_ENVS` | 4 | Max parallel WebSocket sessions |
 
 ## Deploying to Hugging Face Spaces
 
-You can easily deploy your OpenEnv environment to Hugging Face Spaces using the `openenv push` command:
-
 ```bash
-# From the environment directory (where openenv.yaml is located)
+# Deploy to your namespace
 openenv push
 
-# Or specify options
-openenv push --namespace my-org --private
+# Deploy to a specific repo
+openenv push --repo-id my-org/store-manager --private
 ```
 
-The `openenv push` command will:
-1. Validate that the directory is an OpenEnv environment (checks for `openenv.yaml`)
-2. Prepare a custom build for Hugging Face Docker space (enables web interface)
-3. Upload to Hugging Face (ensuring you're logged in)
-
-### Prerequisites
-
-- Authenticate with Hugging Face: The command will prompt for login if not already authenticated
-
-### Options
-
-- `--directory`, `-d`: Directory containing the OpenEnv environment (defaults to current directory)
-- `--repo-id`, `-r`: Repository ID in format 'username/repo-name' (defaults to 'username/env-name' from openenv.yaml)
-- `--base-image`, `-b`: Base Docker image to use (overrides Dockerfile FROM)
-- `--private`: Deploy the space as private (default: public)
-
-### Examples
-
-```bash
-# Push to your personal namespace (defaults to username/env-name from openenv.yaml)
-openenv push
-
-# Push to a specific repository
-openenv push --repo-id my-org/my-env
-
-# Push with a custom base image
-openenv push --base-image ghcr.io/meta-pytorch/openenv-base:latest
-
-# Push as a private space
-openenv push --private
-
-# Combine options
-openenv push --repo-id my-org/my-env --base-image custom-base:latest --private
-```
-
-After deployment, your space will be available at:
-`https://huggingface.co/spaces/<repo-id>`
-
-The deployed space includes:
-- **Web Interface** at `/web` - Interactive UI for exploring the environment
-- **API Documentation** at `/docs` - Full OpenAPI/Swagger interface
-- **Health Check** at `/health` - Container health monitoring
-- **WebSocket** at `/ws` - Persistent session endpoint for low-latency interactions
-
-## Environment Details
-
-### Action
-**StoremanagerAction**: Contains a single field
-- `message` (str) - The message to echo back
-
-### Observation
-**StoremanagerObservation**: Contains the echo response and metadata
-- `echoed_message` (str) - The message echoed back
-- `message_length` (int) - Length of the message
-- `reward` (float) - Reward based on message length (length × 0.1)
-- `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count
-
-### Reward
-The reward is calculated as: `message_length × 0.1`
-- "Hi" → reward: 0.2
-- "Hello, World!" → reward: 1.3
-- Empty message → reward: 0.0
-
-## Advanced Usage
-
-### Connecting to an Existing Server
-
-If you already have a Storemanager environment server running, you can connect directly:
-
-```python
-from StoreManager import StoremanagerEnv
-
-# Connect to existing server
-StoreManagerenv = StoremanagerEnv(base_url="<ENV_HTTP_URL_HERE>")
-
-# Use as normal
-result = StoreManagerenv.reset()
-result = StoreManagerenv.step(StoremanagerAction(message="Hello!"))
-```
-
-Note: When connecting to an existing server, `StoreManagerenv.close()` will NOT stop the server.
-
-### Using the Context Manager
-
-The client supports context manager usage for automatic connection management:
-
-```python
-from StoreManager import StoremanagerAction, StoremanagerEnv
-
-# Connect with context manager (auto-connects and closes)
-with StoremanagerEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-    # Multiple steps with low latency
-    for msg in ["Hello", "World", "!"]:
-        result = env.step(StoremanagerAction(message=msg))
-        print(f"Echoed: {result.observation.echoed_message}")
-```
-
-The client uses WebSocket connections for:
-- **Lower latency**: No HTTP connection overhead per request
-- **Persistent session**: Server maintains your environment state
-- **Efficient for episodes**: Better for many sequential steps
-
-### Concurrent WebSocket Sessions
-
-The server supports multiple concurrent WebSocket connections. To enable this,
-modify `server/app.py` to use factory mode:
-
-```python
-# In server/app.py - use factory mode for concurrent sessions
-app = create_app(
-    StoremanagerEnvironment,  # Pass class, not instance
-    StoremanagerAction,
-    StoremanagerObservation,
-    max_concurrent_envs=4,  # Allow 4 concurrent sessions
-)
-```
-
-Then multiple clients can connect simultaneously:
-
-```python
-from StoreManager import StoremanagerAction, StoremanagerEnv
-from concurrent.futures import ThreadPoolExecutor
-
-def run_episode(client_id: int):
-    with StoremanagerEnv(base_url="http://localhost:8000") as env:
-        result = env.reset()
-        for i in range(10):
-            result = env.step(StoremanagerAction(message=f"Client {client_id}, step {i}"))
-        return client_id, result.observation.message_length
-
-# Run 4 episodes concurrently
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(run_episode, range(4)))
-```
-
-## Development & Testing
-
-### Direct Environment Testing
-
-Test the environment logic directly without starting the HTTP server:
-
-```bash
-# From the server directory
-python3 server/StoreManager_environment.py
-```
-
-This verifies that:
-- Environment resets correctly
-- Step executes actions properly
-- State tracking works
-- Rewards are calculated correctly
-
-### Running Locally
-
-Run the server locally for development:
-
-```bash
-uvicorn server.app:app --reload
-```
+After deployment, your space includes:
+- **Web Interface** at `/web`
+- **API Documentation** at `/docs`
+- **WebSocket** at `/ws` — persistent session for low-latency agent interactions
 
 ## Project Structure
 
 ```
 StoreManager/
-├── .dockerignore         # Docker build exclusions
-├── __init__.py            # Module exports
-├── README.md              # This file
-├── openenv.yaml           # OpenEnv manifest
-├── pyproject.toml         # Project metadata and dependencies
-├── uv.lock                # Locked dependencies (generated)
-├── client.py              # StoremanagerEnv client
-├── models.py              # Action and Observation models
+├── __init__.py              # Module exports
+├── models.py                # Action, Observation, State Pydantic models
+├── client.py                # StoremanagerEnv WebSocket client
+├── tasks.py                 # Task configs (easy/medium/hard) + grader
+├── inference.py             # OpenAI agent runner with structured logs
+├── openenv.yaml             # OpenEnv manifest
+├── pyproject.toml           # Dependencies
 └── server/
-    ├── __init__.py        # Server module exports
-    ├── StoreManager_environment.py  # Core environment logic
-    ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
-    └── Dockerfile         # Container image definition
+    ├── StoreManager_environment.py  # Core RL environment logic
+    ├── app.py               # FastAPI server (HTTP + WebSocket)
+    └── Dockerfile           # Container image
 ```
