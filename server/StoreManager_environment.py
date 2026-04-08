@@ -194,7 +194,7 @@ class StoremanagerEnvironment(Environment):
             restock_cost_this_step=0.0,
             unjustified_discount_penalty=0.0,
             done=False,
-            reward=0.0,
+            reward=self._normalize_reward(0.0),
         )
 
     def step(
@@ -639,7 +639,7 @@ class StoremanagerEnvironment(Environment):
             restock_cost_this_step=0.0,
             unjustified_discount_penalty=0.0,
             done=False,
-            reward=0.0,
+            reward=self._normalize_reward(0.0),
             error=message,
         )
 

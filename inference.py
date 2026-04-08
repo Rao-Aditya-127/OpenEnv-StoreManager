@@ -307,7 +307,7 @@ def run_episode(
 
             step_num += 1
             print(
-                f"[STEP] {json.dumps({'task': task_name, 'step': step_num, 'action': action, 'reward': round(obs.get('reward', 0.0) or 0.0, 4), 'cumulative_profit': round(obs.get('cumulative_profit', 0.0), 4), 'holding_cost': round(obs.get('holding_cost_this_step', 0.0), 4), 'placement_cost': obs.get('placement_cost_this_step', 0.0), 'restock_cost': round(obs.get('restock_cost_this_step', 0.0), 4), 'unjustified_penalty': round(obs.get('unjustified_discount_penalty', 0.0), 4)})}",
+                f"[STEP] {json.dumps({'task': task_name, 'step': step_num, 'action': action, 'reward': round(obs.get('reward') or 0.5, 4), 'cumulative_profit': round(obs.get('cumulative_profit', 0.0), 4), 'holding_cost': round(obs.get('holding_cost_this_step', 0.0), 4), 'placement_cost': obs.get('placement_cost_this_step', 0.0), 'restock_cost': round(obs.get('restock_cost_this_step', 0.0), 4), 'unjustified_penalty': round(obs.get('unjustified_discount_penalty', 0.0), 4)})}",
                 flush=True,
             )
 
