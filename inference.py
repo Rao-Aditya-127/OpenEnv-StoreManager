@@ -68,8 +68,18 @@ Discounts boost customer pick probability and clear near-expiry stock.
 Discount tiers and effect:
   0%  -> no change   | 10% -> +10% relative boost | 20% -> +20% boost | 50% -> +50% boost
 
+PRICE FLOOR RULES (selling below cost is penalized unless near expiry):
+  In(steps) >= 4  -> floor = cost_price   (no below-cost selling allowed)
+  In(steps) == 3  -> floor = 70% of cost  (max 30% loss/unit)
+  In(steps) == 2  -> floor = 40% of cost  (max 60% loss/unit)
+  In(steps) == 1  -> floor = 10% of cost  (max 90% loss/unit — clear it!)
+
+  Selling below cost when In(steps) >= 4 incurs an EXTRA penalty equal to the
+  per-unit loss × units sold. Avoid below-cost discounts unless near expiry.
+
 When to discount: near-expiry items (avoid expiry penalty = remaining_qty x cost),
-high-margin products to drive volume, or oversupplied items.
+high-margin products (Margin > $0) to drive volume, or oversupplied items.
+Near expiry (In <= 3): aggressive discounts are worthwhile to avoid the full expiry penalty.
 
 ── 2. RESTOCK ───────────────────────────────────────────────────────────────────
 Place a reorder for a product. Stock arrives after restock_lead_time steps.
@@ -128,10 +138,10 @@ def _format_inventory(obs: dict) -> str:
             for z in [1, 2, 3]
         ),
         "",
-        f"{'ID':<4} {'Name':<10} {'Cost':>6} {'Price':>7} {'Qty':>5} "
-        f"{'Expires':>8} {'Zone':>5} {'PickProb':>9} {'HoldRate':>9} "
+        f"{'ID':<4} {'Name':<10} {'Cost':>6} {'Price':>7} {'Margin':>7} {'Qty':>5} "
+        f"{'In(steps)':>9} {'Zone':>5} {'PickProb':>9} {'PopMult':>8} {'HoldRate':>9} "
         f"{'RestockCost':>11} {'Lead':>5} {'PendingQty':>10} {'Active':>7}",
-        "-" * 105,
+        "-" * 122,
     ]
     for p in obs["inventory"]:
         pending_str = (
@@ -139,13 +149,17 @@ def _format_inventory(obs: dict) -> str:
             if p.get("pending_restock_quantity", 0) > 0
             else "-"
         )
+        margin = p.get("margin_per_unit", round(p["selling_price"] - p["cost_price"], 4))
+        steps_left = p.get("steps_until_expiry", p.get("expiry_step", 0) - obs.get("current_step", 0))
         lines.append(
             f"{p['product_id']:<4} {p['name']:<10} "
             f"${p['cost_price']:>5.2f} ${p['selling_price']:>6.2f} "
+            f"${margin:>+6.2f} "
             f"{p['quantity']:>5} "
-            f"@step{p['expiry_step']:>4} "
+            f"{steps_left:>9} "
             f"{p.get('zone', 2):>5} "
             f"{p['effective_pick_prob']:>9.4f} "
+            f"{p.get('popularity_multiplier', 1.0):>8.3f} "
             f"{p.get('holding_cost_rate', 0.0):>9.4f} "
             f"${p.get('restock_cost_per_unit', 0.0):>10.2f} "
             f"{p.get('restock_lead_time', 2):>5} "
@@ -249,6 +263,8 @@ def run_episode(
     task = TASKS[task_name]
 
     ws = websocket.create_connection(ws_url, timeout=60)
+    cumulative = 0.0
+    score = 0.0
     try:
         # ── Reset ──────────────────────────────────────────────────────────────
         ws.send(json.dumps({"type": "reset", "data": {"task": task_name, "seed": task.seed}}))
@@ -292,7 +308,7 @@ def run_episode(
 
             step_num += 1
             print(
-                f"[STEP] {json.dumps({'task': task_name, 'step': step_num, 'action': action, 'reward': round(obs.get('reward', 0.0) or 0.0, 4), 'cumulative_profit': round(obs.get('cumulative_profit', 0.0), 4), 'holding_cost': round(obs.get('holding_cost_this_step', 0.0), 4), 'placement_cost': obs.get('placement_cost_this_step', 0.0), 'restock_cost': round(obs.get('restock_cost_this_step', 0.0), 4)})}",
+                f"[STEP] {json.dumps({'task': task_name, 'step': step_num, 'action': action, 'reward': round(obs.get('reward', 0.0) or 0.0, 4), 'cumulative_profit': round(obs.get('cumulative_profit', 0.0), 4), 'holding_cost': round(obs.get('holding_cost_this_step', 0.0), 4), 'placement_cost': obs.get('placement_cost_this_step', 0.0), 'restock_cost': round(obs.get('restock_cost_this_step', 0.0), 4), 'unjustified_penalty': round(obs.get('unjustified_discount_penalty', 0.0), 4)})}",
                 flush=True,
             )
 
@@ -302,15 +318,14 @@ def run_episode(
         cumulative = obs.get("cumulative_profit", 0.0)
         score = grade(task_name, cumulative)
 
-        print(
-            f"[END] {json.dumps({'task': task_name, 'cumulative_profit': round(cumulative, 4), 'score': round(score, 4), 'profit_target': task.profit_target})}",
-            flush=True,
-        )
-
         return cumulative, score
 
     finally:
         ws.close()
+        print(
+            f"[END] {json.dumps({'task': task_name, 'cumulative_profit': round(cumulative, 4), 'score': round(score, 4), 'profit_target': task.profit_target})}",
+            flush=True,
+        )
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────

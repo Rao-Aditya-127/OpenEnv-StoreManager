@@ -83,6 +83,7 @@ class StoremanagerEnv(
             holding_cost_this_step=obs_data.get("holding_cost_this_step", 0.0),
             placement_cost_this_step=obs_data.get("placement_cost_this_step", 0.0),
             restock_cost_this_step=obs_data.get("restock_cost_this_step", 0.0),
+            unjustified_discount_penalty=obs_data.get("unjustified_discount_penalty", 0.0),
             done=payload.get("done", False),
             reward=payload.get("reward"),
             metadata=obs_data.get("metadata", {}),

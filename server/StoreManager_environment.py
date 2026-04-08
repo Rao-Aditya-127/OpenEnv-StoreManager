@@ -173,6 +173,7 @@ class StoremanagerEnvironment(Environment):
         self._recompute_pick_probs()
 
         self._update_state(episode_id=episode_id or str(uuid4()), last_reward=0.0)
+        self._refresh_product_derived_fields()
 
         return StoremanagerObservation(
             inventory=list(self._inventory),
@@ -191,6 +192,7 @@ class StoremanagerEnvironment(Environment):
             holding_cost_this_step=0.0,
             placement_cost_this_step=0.0,
             restock_cost_this_step=0.0,
+            unjustified_discount_penalty=0.0,
             done=False,
             reward=0.0,
         )
@@ -250,9 +252,22 @@ class StoremanagerEnvironment(Environment):
                     f"Product '{target.name}' (id={target.product_id}) has no stock remaining."
                 )
             target.current_discount_pct = float(action.discount_pct)
-            # selling_price compounds down: each discount cuts the current price
+            # Phase 1: dynamic expiry-aware price floor.
+            # Far from expiry: protect margin — floor at cost_price.
+            # Near expiry: allow progressive below-cost markdown to clear stock
+            # before the far-worse full expiry penalty hits.
+            steps_left = target.expiry_step - self._current_step
+            if steps_left >= 4:
+                price_floor = target.cost_price           # full protection
+            elif steps_left == 3:
+                price_floor = round(target.cost_price * 0.70, 2)  # 30% loss/unit max
+            elif steps_left == 2:
+                price_floor = round(target.cost_price * 0.40, 2)  # 60% loss/unit max
+            else:                                                    # 1 step left
+                price_floor = round(target.cost_price * 0.10, 2)  # 90% loss/unit max
             target.selling_price = round(
-                target.selling_price * (1.0 - action.discount_pct / 100.0), 2
+                max(price_floor, target.selling_price * (1.0 - action.discount_pct / 100.0)),
+                2,
             )
             # popularity_multiplier compounds up: repeated discounting makes the
             # product progressively more visible/attractive to customers
@@ -267,6 +282,13 @@ class StoremanagerEnvironment(Environment):
                 return self._error_observation(
                     f"restock_quantity must be a positive integer, got {qty!r}."
                 )
+            if target.expiry_step <= self._current_step:
+                return self._error_observation(
+                    f"Product '{target.name}' (id={target.product_id}) has expired "
+                    f"(expiry_step={target.expiry_step}, current_step={self._current_step}). "
+                    f"Restocking an expired product wastes money — the stock would "
+                    f"immediately re-expire and incur an expiry penalty."
+                )
             if target.pending_restock_quantity > 0:
                 return self._error_observation(
                     f"Product '{target.name}' already has a pending restock order "
@@ -274,6 +296,13 @@ class StoremanagerEnvironment(Environment):
                     f"{target.pending_restock_arrives_at_step}. Wait for delivery first."
                 )
             arrive_at = self._current_step + target.restock_lead_time
+            if arrive_at >= target.expiry_step:
+                return self._error_observation(
+                    f"Restock order for '{target.name}' would arrive at step {arrive_at} "
+                    f"but the product expires at step {target.expiry_step}. "
+                    f"The delivered units would immediately expire and be penalized. "
+                    f"Order cancelled to prevent wasted spend."
+                )
             self._pending_orders.append({
                 "product_id": target.product_id,
                 "quantity": qty,
@@ -309,6 +338,7 @@ class StoremanagerEnvironment(Environment):
         if not active:
             done = True
             self._update_state(last_reward=0.0)
+            self._refresh_product_derived_fields()
             return StoremanagerObservation(
                 inventory=list(self._inventory),
                 current_step=self._current_step,
@@ -326,6 +356,7 @@ class StoremanagerEnvironment(Environment):
                 holding_cost_this_step=round(holding_cost, 4),
                 placement_cost_this_step=placement_cost,
                 restock_cost_this_step=round(restock_cost, 4),
+                unjustified_discount_penalty=0.0,
                 done=done,
                 reward=self._normalize_reward(0.0),
             )
@@ -358,6 +389,7 @@ class StoremanagerEnvironment(Environment):
         step_revenue = 0.0
         step_cost = 0.0
         units_sold_total = 0
+        unjustified_discount_penalty = 0.0
 
         for product in active:
             wanted = sales_counts.get(product.product_id, 0)
@@ -374,8 +406,15 @@ class StoremanagerEnvironment(Environment):
                         "units_sold": sold,
                     }
                 )
+                # Phase 3: if selling below cost with no urgency, double the per-unit
+                # loss as an extra penalty — gives a sharp "this is bad" signal.
+                if product.selling_price < product.cost_price:
+                    steps_left = product.expiry_step - self._current_step
+                    if steps_left >= 4:
+                        unjustified_discount_penalty += sold * (product.cost_price - product.selling_price)
             if product.quantity == 0:
                 product.is_active = False
+                product.effective_pick_prob = 0.0
 
         # ── 10. Advance step counter ────────────────────────────────────────
         self._current_step += 1
@@ -389,11 +428,13 @@ class StoremanagerEnvironment(Environment):
                 expired_names.append(product.name)
                 product.is_active = False
                 product.quantity = 0
+                product.effective_pick_prob = 0.0
 
         # ── 12. Reward and cumulative profit ────────────────────────────────
         step_profit = (
             step_revenue - step_cost - expiry_penalty
             - holding_cost - placement_cost - restock_cost
+            - unjustified_discount_penalty
         )
         self._cumulative_profit += step_profit
 
@@ -405,6 +446,7 @@ class StoremanagerEnvironment(Environment):
         # ── 14. State update and return ─────────────────────────────────────
         normalized_reward = self._normalize_reward(step_profit)
         self._update_state(last_reward=normalized_reward)
+        self._refresh_product_derived_fields()
 
         return StoremanagerObservation(
             inventory=list(self._inventory),
@@ -423,6 +465,7 @@ class StoremanagerEnvironment(Environment):
             holding_cost_this_step=round(holding_cost, 4),
             placement_cost_this_step=placement_cost,
             restock_cost_this_step=round(restock_cost, 4),
+            unjustified_discount_penalty=round(unjustified_discount_penalty, 4),
             done=done,
             reward=normalized_reward,
             metadata={
@@ -432,6 +475,7 @@ class StoremanagerEnvironment(Environment):
                 "holding_cost": round(holding_cost, 4),
                 "placement_cost": placement_cost,
                 "restock_cost": round(restock_cost, 4),
+                "unjustified_discount_penalty": round(unjustified_discount_penalty, 4),
                 "step_profit": round(step_profit, 4),
             },
         )
@@ -473,6 +517,12 @@ class StoremanagerEnvironment(Environment):
             if p.is_active and p.zone in occupancy:
                 occupancy[p.zone] += 1
         return occupancy
+
+    def _refresh_product_derived_fields(self) -> None:
+        """Recompute ephemeral derived fields on every product before returning an observation."""
+        for p in self._inventory:
+            p.steps_until_expiry = max(0, p.expiry_step - self._current_step)
+            p.margin_per_unit = round(p.selling_price - p.cost_price, 4)
 
     def _recompute_pick_probs(self) -> None:
         """Recompute normalised pick probabilities for all active products (zone + popularity)."""
@@ -567,6 +617,7 @@ class StoremanagerEnvironment(Environment):
 
     def _error_observation(self, message: str) -> StoremanagerObservation:
         """Return an observation flagging an invalid action (step does NOT advance)."""
+        self._refresh_product_derived_fields()
         return StoremanagerObservation(
             inventory=list(self._inventory),
             current_step=self._current_step,
@@ -584,6 +635,7 @@ class StoremanagerEnvironment(Environment):
             holding_cost_this_step=0.0,
             placement_cost_this_step=0.0,
             restock_cost_this_step=0.0,
+            unjustified_discount_penalty=0.0,
             done=False,
             reward=0.0,
             error=message,

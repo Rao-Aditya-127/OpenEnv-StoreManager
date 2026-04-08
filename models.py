@@ -79,6 +79,23 @@ class ProductState(BaseModel):
             "Persists across steps within an episode; resets to 1.0 on reset()."
         ),
     )
+    # Derived signal fields (recomputed each step — do not set manually)
+    steps_until_expiry: int = Field(
+        default=0,
+        description=(
+            "Steps remaining before this product expires (expiry_step - current_step). "
+            "Near-expiry threshold: <= 3 steps. Below-cost discounting is permitted "
+            "when steps_until_expiry <= 3; the price floor loosens progressively."
+        ),
+    )
+    margin_per_unit: float = Field(
+        default=0.0,
+        description=(
+            "Current per-unit profit margin: selling_price - cost_price. "
+            "Positive = profitable. Zero = break-even. "
+            "Negative = selling at a loss (only possible when steps_until_expiry <= 3)."
+        ),
+    )
 
 
 class StoremanagerAction(Action):
@@ -130,7 +147,7 @@ class StoremanagerObservation(Observation):
     )
     task_name: str = Field(
         default="custom",
-        description="Active difficulty task: easy / medium / hard / custom",
+        description="Active difficulty task: easy / medium / hard / expert / custom",
     )
     error: Optional[str] = Field(
         default=None, description="Error message if the last action was invalid"
@@ -157,6 +174,14 @@ class StoremanagerObservation(Observation):
     )
     restock_cost_this_step: float = Field(
         default=0.0, description="Ordering cost charged this step if a restock order was placed"
+    )
+    unjustified_discount_penalty: float = Field(
+        default=0.0,
+        description=(
+            "Extra penalty this step for selling below cost_price when steps_until_expiry >= 4. "
+            "Equals the total per-unit loss on unjustified below-cost units sold. "
+            "Zero when below-cost selling is justified by near-expiry urgency."
+        ),
     )
 
 

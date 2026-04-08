@@ -1,0 +1,35 @@
+# Version control
+.git/
+.gitignore
+
+# IDE / editor
+.claude/
+.vscode/
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Virtual environments (rebuilt inside Docker)
+.venv/
+venv/
+env/
+
+# Test files (not needed at runtime)
+test_ws.py
+pytest.ini
+.pytest_cache/
+
+# Docs and examples (not needed in container)
+Examples/
+docs/
+*.md
+
+# OS artifacts
+.DS_Store
+Thumbs.db

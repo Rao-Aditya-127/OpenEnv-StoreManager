@@ -56,3 +56,4 @@ docs/
 
 # tests files
 test_ws.py
+tests/
