@@ -264,7 +264,6 @@ def run_episode(
 
     ws = websocket.create_connection(ws_url, timeout=60)
     cumulative = 0.0
-    score = 0.0
     try:
         # ── Reset ──────────────────────────────────────────────────────────────
         ws.send(json.dumps({"type": "reset", "data": {"task": task_name, "seed": task.seed}}))
@@ -316,11 +315,10 @@ def run_episode(
                 break
 
         cumulative = obs.get("cumulative_profit", 0.0)
-        score = grade(task_name, cumulative)
-
-        return cumulative, score
+        return cumulative, grade(task_name, cumulative)
 
     finally:
+        score = grade(task_name, cumulative)
         ws.close()
         print(
             f"[END] {json.dumps({'task': task_name, 'cumulative_profit': round(cumulative, 4), 'score': round(score, 4), 'profit_target': task.profit_target})}",
