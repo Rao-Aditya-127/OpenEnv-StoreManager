@@ -1,16 +1,3 @@
----
-title: Store Manager Environment
-emoji: 🛒
-colorFrom: blue
-colorTo: yellow
-sdk: docker
-pinned: false
-app_port: 8000
-base_path: /web
-tags:
-  - openenv
----
-
 # Store Manager Environment
 
 A retail store simulator where an LLM agent acts as the store manager. The agent observes full inventory state each step and chooses one action — discount a product, restock inventory, or move a product to a better shelf zone — to influence customer demand and maximize cumulative profit over a fixed episode horizon.
@@ -218,20 +205,6 @@ score = clamp(cumulative_profit / profit_target, 0.0, 1.0)
 
 ---
 
-## Baseline Scores
-
-Expected performance using `gpt-4o-mini` (deterministic, fixed seeds):
-
-| Task | Profit Target | Expected Profit | Expected Score |
-|------|--------------|-----------------|----------------|
-| easy | $120 | ~$140–180 | ~0.90–1.0 |
-| medium | $200 | ~$160–220 | ~0.80–1.0 |
-| hard | $240 | ~$180–260 | ~0.75–1.0 |
-| expert | $190 | ~$100–170 | ~0.50–0.90 |
-
-Scores are fully reproducible. Re-run `inference.py` with the same model and seeds to verify.
-
----
 
 ## Quick Start
 
