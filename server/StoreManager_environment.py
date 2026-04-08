@@ -488,12 +488,12 @@ class StoremanagerEnvironment(Environment):
 
     def _normalize_reward(self, step_profit: float) -> float:
         """
-        Map raw step profit to a meaningful reward in (0.0, 1.0) using a
+        Map raw step profit to a meaningful reward strictly in (0.001, 0.999) using a
         sigmoid centered at break-even (step_profit = 0).
 
         Formula:
             x = step_profit / per_step_target   (normalise by average needed per step)
-            reward = sigmoid(k * x) = 1 / (1 + exp(-k * x))
+            reward = clamp(sigmoid(k * x), 0.001, 0.999)
 
         Where k=2 gives a useful spread:
             step_profit =  0            -> 0.50  (neutral, broke even)
@@ -502,13 +502,15 @@ class StoremanagerEnvironment(Environment):
             step_profit = -per_step_tgt -> 0.12  (below break-even)
             step_profit = -2*per_step_tgt -> 0.02 (large penalty step)
 
-        This gives the model a continuous, differentiable gradient signal
-        across the full [0, 1] range — much more informative than a hard clamp.
-        Raw dollar profit is preserved in last_step_profit and metadata.
+        x is clamped to [-7, 7] to prevent math.exp() OverflowError on extreme
+        profits, and the result is clamped to (0.001, 0.999) to ensure the reward
+        is never exactly 0.0 or 1.0.
         """
         per_step_target = self._profit_target / self._max_steps
         x = step_profit / per_step_target if per_step_target != 0 else 0.0
-        return round(1.0 / (1.0 + math.exp(-2.0 * x)), 6)
+        x = max(-7.0, min(7.0, x))
+        raw = 1.0 / (1.0 + math.exp(-2.0 * x))
+        return round(max(0.001, min(0.999, raw)), 6)
 
     def _zone_occupancy(self) -> Dict[int, int]:
         """Count active products in each zone."""

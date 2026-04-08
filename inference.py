@@ -319,11 +319,14 @@ def run_episode(
 
     finally:
         score = grade(task_name, cumulative)
-        ws.close()
         print(
             f"[END] {json.dumps({'task': task_name, 'cumulative_profit': round(cumulative, 4), 'score': round(score, 4), 'profit_target': task.profit_target})}",
             flush=True,
         )
+        try:
+            ws.close()
+        except Exception:
+            pass
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
