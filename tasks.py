@@ -17,7 +17,7 @@ Four difficulty levels are defined, in strict increasing order of complexity:
 Each task has a fixed seed so grading is deterministic: the same agent always
 produces the same episode given the same seed, and the score is computed as:
 
-    score = clamp(cumulative_profit / profit_target, 1e-9, 1 - 1e-9)
+    score = clamp(cumulative_profit / profit_target, 0.001, 0.999)
 """
 
 from __future__ import annotations
@@ -121,7 +121,7 @@ def grade(task_name: str, cumulative_profit: float) -> float:
     Return a deterministic score in (0.0, 1.0) exclusive for a completed episode.
 
     Formula:
-        score = clamp(cumulative_profit / profit_target, 1e-9, 1 - 1e-9)
+        score = clamp(cumulative_profit / profit_target, 0.001, 0.999)
 
     Args:
         task_name: One of "easy", "medium", "hard", "expert" (or a custom string).
@@ -130,7 +130,7 @@ def grade(task_name: str, cumulative_profit: float) -> float:
     Returns:
         Score strictly between 0.0 and 1.0 (exclusive).
     """
-    _EPS = 1e-9
+    _EPS = 0.001
     config = TASKS.get(task_name)
     if config is None or config.profit_target <= 0:
         return 1.0 - _EPS
