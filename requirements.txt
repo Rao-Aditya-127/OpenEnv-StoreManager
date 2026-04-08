@@ -1,0 +1,4 @@
+openenv-core[core]>=0.2.1
+numpy>=1.24.0
+websocket-client>=1.6.0
+openai>=1.0.0
