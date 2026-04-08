@@ -34,16 +34,20 @@ import time
 try:
     import websocket  # websocket-client library
 except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "websocket-client", "-q"])
-    import websocket  # noqa: F811
+    print(
+        "ERROR: websocket-client not installed. Run: pip install websocket-client",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 try:
     from openai import OpenAI
 except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "openai", "-q"])
-    from openai import OpenAI
+    print(
+        "ERROR: openai not installed. Run: pip install openai",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 # Add project root to path so tasks.py is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
