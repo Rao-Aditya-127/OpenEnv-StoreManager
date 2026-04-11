@@ -262,9 +262,10 @@ def run_episode(
     """
     task = TASKS[task_name]
 
-    ws = websocket.create_connection(ws_url, timeout=60)
+    ws = None
     cumulative = 0.0
     try:
+        ws = websocket.create_connection(ws_url, timeout=60)
         # ── Reset ──────────────────────────────────────────────────────────────
         ws.send(json.dumps({"type": "reset", "data": {"task": task_name, "seed": task.seed}}))
         obs = _unpack(_recv_json(ws))
@@ -323,10 +324,11 @@ def run_episode(
             f"[END] {json.dumps({'task': task_name, 'cumulative_profit': round(cumulative, 4), 'score': round(score, 4), 'profit_target': task.profit_target})}",
             flush=True,
         )
-        try:
-            ws.close()
-        except Exception:
-            pass
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -368,7 +370,7 @@ def main() -> None:
             results[task_name] = {"profit": round(profit, 4), "score": round(score, 4)}
         except Exception as exc:
             print(f"[ERROR] task={task_name} error={exc}", file=sys.stderr, flush=True)
-            results[task_name] = {"profit": 0.0, "score": 0.0}
+            results[task_name] = {"profit": 0.0, "score": grade(task_name, 0.0)}
         # Brief pause between tasks to avoid overwhelming the server
         time.sleep(1)
 

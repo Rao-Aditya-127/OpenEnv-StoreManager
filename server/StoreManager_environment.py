@@ -172,7 +172,7 @@ class StoremanagerEnvironment(Environment):
         self._inventory = self._generate_inventory()
         self._recompute_pick_probs()
 
-        self._update_state(episode_id=episode_id or str(uuid4()), last_reward=0.0)
+        self._update_state(episode_id=episode_id or str(uuid4()), last_reward=self._normalize_reward(0.0))
         self._refresh_product_derived_fields()
 
         return StoremanagerObservation(
@@ -337,7 +337,7 @@ class StoremanagerEnvironment(Environment):
         active = [p for p in self._inventory if p.is_active and p.quantity > 0]
         if not active:
             done = True
-            self._update_state(last_reward=0.0)
+            self._update_state(last_reward=self._normalize_reward(0.0))
             self._refresh_product_derived_fields()
             return StoremanagerObservation(
                 inventory=list(self._inventory),
