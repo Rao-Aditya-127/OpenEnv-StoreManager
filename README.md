@@ -23,7 +23,7 @@ These three mechanics combine into a rich multi-step decision problem where each
 | **Products** | N products, each with cost price, selling price, quantity, expiry step, shelf zone, and a base pick probability |
 | **Customers** | Fixed number of customers per step pick products according to a normalized probability distribution |
 | **Agent Action** | Exactly one of three action types per step: `discount`, `restock`, or `place` |
-| **Reward** | Normalized sigmoid reward in `[0.0, 1.0]` based on step profit vs. per-step target |
+| **Reward** | Normalized sigmoid reward strictly in `(0.0, 1.0)` based on step profit vs. per-step target |
 | **Expiry penalty** | `remaining_quantity × cost_price` charged when a product reaches its expiry step |
 | **Episode end** | After `max_steps` steps, or when all products are inactive |
 
@@ -143,7 +143,7 @@ Move a product to a different shelf zone. Takes effect immediately. Charges a fl
 
 ## Reward Function
 
-Each step returns a **normalized reward in `[0.0, 1.0]`** using a sigmoid centred at break-even:
+Each step returns a **normalized reward strictly in `(0.0, 1.0)`** using a sigmoid centred at break-even:
 
 ```
 step_profit = step_revenue − cost_of_goods_sold − expiry_penalty
@@ -155,7 +155,7 @@ reward = sigmoid(2x) = 1 / (1 + exp(−2x))
 
 | Step profit vs. target | reward |
 |---|---|
-| Catastrophic loss (−∞) | → 0.0 |
+| Catastrophic loss (−∞) | → 0.001 |
 | Break-even (0) | = 0.50 |
 | On target | ≈ 0.88 |
 | 2× target | ≈ 0.98 |
@@ -200,7 +200,7 @@ Four pre-configured tasks with increasing complexity. Each task has a fixed seed
 ### Grading
 
 ```
-score = clamp(cumulative_profit / profit_target, 0.0, 1.0)
+score = clamp(cumulative_profit / profit_target, 0.001, 0.999)
 ```
 
 ---
@@ -287,7 +287,7 @@ HF_TOKEN=sk-... MODEL_NAME=gpt-4o-mini STORE_ENV_URL=http://localhost:8000 pytho
 [START] {"task": "easy", "seed": 42, "model": "gpt-4o-mini", "max_steps": 20, "profit_target": 120.0}
 [STEP]  {"task": "easy", "step": 1, "action": {"action_type": "discount", "product_id": 2, "discount_pct": 20}, "reward": 0.88, "cumulative_profit": 12.5, "holding_cost": 8.2, "placement_cost": 0, "restock_cost": 0}
 ...
-[END]   {"task": "easy", "cumulative_profit": 145.3, "score": 1.0, "profit_target": 120.0}
+[END]   {"task": "easy", "cumulative_profit": 145.3, "score": 0.999, "profit_target": 120.0}
 ```
 
 A single server instance handles all four tasks — the task config is passed in the `reset` message, so no server restart is needed between tasks.
