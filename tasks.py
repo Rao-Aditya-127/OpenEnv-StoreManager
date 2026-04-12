@@ -130,11 +130,19 @@ def grade(task_name: str, cumulative_profit: float) -> float:
     Returns:
         Score strictly between 0.0 and 1.0 (exclusive).
     """
+    import math
+
     _EPS = 0.001
+    try:
+        cp = float(cumulative_profit)
+        if not math.isfinite(cp):
+            cp = 0.0
+    except (TypeError, ValueError):
+        cp = 0.0
     config = TASKS.get(task_name)
     if config is None or config.profit_target <= 0:
         return 1.0 - _EPS
-    return min(1.0 - _EPS, max(_EPS, cumulative_profit / config.profit_target))
+    return min(1.0 - _EPS, max(_EPS, cp / config.profit_target))
 
 
 __all__ = ["TaskConfig", "TASKS", "grade"]

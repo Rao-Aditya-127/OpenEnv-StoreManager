@@ -308,20 +308,23 @@ def run_episode(
 
             step_num += 1
             print(
-                f"[STEP] {json.dumps({'task': task_name, 'step': step_num, 'action': action, 'reward': round(obs.get('reward') or 0.5, 4), 'cumulative_profit': round(obs.get('cumulative_profit', 0.0), 4), 'holding_cost': round(obs.get('holding_cost_this_step', 0.0), 4), 'placement_cost': obs.get('placement_cost_this_step', 0.0), 'restock_cost': round(obs.get('restock_cost_this_step', 0.0), 4), 'unjustified_penalty': round(obs.get('unjustified_discount_penalty', 0.0), 4)})}",
+                f"[STEP] {json.dumps({'task': task_name, 'step': step_num, 'action': action, 'reward': round(obs.get('reward') if obs.get('reward') is not None else 0.5, 4), 'cumulative_profit': round(float(obs.get('cumulative_profit') or 0.0), 4), 'holding_cost': round(float(obs.get('holding_cost_this_step') or 0.0), 4), 'placement_cost': float(obs.get('placement_cost_this_step') or 0.0), 'restock_cost': round(float(obs.get('restock_cost_this_step') or 0.0), 4), 'unjustified_penalty': round(float(obs.get('unjustified_discount_penalty') or 0.0), 4)})}",
                 flush=True,
             )
 
             if obs.get("done", False):
                 break
 
-        cumulative = obs.get("cumulative_profit", 0.0)
+        cumulative_raw = obs.get("cumulative_profit")
+        cumulative = float(cumulative_raw) if cumulative_raw is not None else 0.0
         return cumulative, grade(task_name, cumulative)
 
     finally:
         score = grade(task_name, cumulative)
+        # Extra safety: ensure score is strictly within (0, 1) exclusive
+        score = max(1e-9, min(1.0 - 1e-9, score))
         print(
-            f"[END] {json.dumps({'task': task_name, 'cumulative_profit': round(cumulative, 4), 'score': round(score, 4), 'profit_target': task.profit_target})}",
+            f"[END] {json.dumps({'task': task_name, 'cumulative_profit': round(cumulative, 4), 'score': round(score, 6), 'profit_target': task.profit_target})}",
             flush=True,
         )
         if ws is not None:
